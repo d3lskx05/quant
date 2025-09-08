@@ -111,8 +111,9 @@ st.title("🔍 Тестер квантизованных моделей")
 # Ввод текста
 input_text = st.text_area("Введите текст:", "Это тестовое предложение.")
 
-# Выбор источника модели
-source_choice = st.radio("Выберите источник модели:", ["gdrive", "hf"])
+# Выбор источников
+orig_source = st.radio("Источник оригинальной модели:", ["gdrive", "hf"], index=1, key="orig")
+quant_source = st.radio("Источник квантованной модели:", ["gdrive", "hf"], index=0, key="quant")
 
 # ID моделей
 original_id = st.text_input("ID/Repo оригинальной модели:", "deepvk/USER-BGE-M3")
@@ -122,9 +123,9 @@ quantized_id = st.text_input("ID/Repo квантованной модели:", "
 if st.button("🔎 Запустить тест"):
     st.write("⏳ Скачиваю и загружаю модели...")
 
-    # Скачиваем модели
-    orig_dir = download_model(source_choice, original_id, "original_model")
-    quant_dir = download_model(source_choice, quantized_id, "quantized_model")
+    # Скачиваем модели отдельно
+    orig_dir = download_model(orig_source, original_id, "original_model")
+    quant_dir = download_model(quant_source, quantized_id, "quantized_model")
 
     # Загружаем модели
     original_model = load_model(str(orig_dir), model_type="sentence-transformers")
