@@ -116,9 +116,9 @@ def cosine_similarity(vec1, vec2):
 # ============================================================
 # 🎛️ UI
 # ============================================================
-st.title("🔍 Тестирование моделей: Оригинал vs Квант")
+st.title("🔍 Сравнение моделей: Оригинал vs Квант")
 
-mode = st.radio("Выберите режим:", ["Оригинальная модель", "Квантованная модель"])
+mode = st.radio("Выберите режим:", ["Оригинальная модель", "Квантованная модель", "Сравнение обеих"])
 
 input_text = st.text_area("Тексты для теста (по одной строке)", "Это тестовое предложение.\nПример второй строки.")
 texts = [t.strip() for t in input_text.split("\n") if t.strip()]
@@ -128,16 +128,12 @@ force_download = st.checkbox("♻️ Перекачать модель зано�
 
 metrics = {}
 
-if mode == "Оригинальная модель":
-    model_id = st.text_input("HF repo ID", "deepvk/USER-BGE-M3")
-else:
-    col1, col2 = st.columns(2)
-    with col1:
-        quant_source = st.selectbox("Источник", ["gdrive", "hf", "local"], index=1)
-        quant_id = st.text_input("ID/Repo/Path", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
-    with col2:
-        quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3")
-        tokenizer_name = st.text_input("Tokenizer name", "")
+# Параметры для обеих моделей
+orig_id = st.text_input("HF repo ID для оригинала", "deepvk/USER-BGE-M3")
+quant_source = st.selectbox("Источник квантованной", ["gdrive", "hf", "local"], index=1)
+quant_id = st.text_input("ID/Repo/Path квантованной", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
+quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3")
+tokenizer_name = st.text_input("Tokenizer name", "")
 
 run_button = st.button("🚀 Запустить тест")
 
@@ -148,14 +144,18 @@ if run_button:
     try:
         proc = psutil.Process()
         texts_for_run = (texts * batch_size)[:max(len(texts), 1)]
+        results = []
 
-        if mode == "Оригинальная модель":
+        def run_original():
             with st.spinner("Загрузка оригинальной модели..."):
-                model = SentenceTransformer(model_id)
+                model = SentenceTransformer(orig_id)
             t0 = time.perf_counter()
             embs = model.encode(texts_for_run, normalize_embeddings=True)
             t1 = time.perf_counter()
-        else:
+            mem = proc.memory_info().rss / 1024 ** 2
+            return embs, t1 - t0, mem
+
+        def run_quant():
             with st.spinner("Загрузка квантованной модели..."):
                 model = QuantModel(
                     model_id=quant_id,
@@ -167,22 +167,25 @@ if run_button:
             t0 = time.perf_counter()
             embs = model.encode(texts_for_run, normalize=True)
             t1 = time.perf_counter()
+            mem = proc.memory_info().rss / 1024 ** 2
+            return embs, t1 - t0, mem
 
-        latency = t1 - t0
-        memory = proc.memory_info().rss / 1024 ** 2
+        if mode == "Оригинальная модель":
+            e, t, m = run_original()
+            results.append({"Model": "Original", "Latency (s)": t, "Memory (MB)": m})
 
-        metrics = {
-            "Mode": [mode],
-            "Batch Size": [batch_size],
-            "Latency (s)": [latency],
-            "Memory (MB)": [memory],
-        }
+        elif mode == "Квантованная модель":
+            e, t, m = run_quant()
+            results.append({"Model": "Quantized", "Latency (s)": t, "Memory (MB)": m})
 
-        st.subheader("📊 Результаты")
-        st.metric("Latency (s)", f"{latency:.4f}")
-        st.metric("Memory (MB)", f"{memory:.1f}")
+        else:  # Сравнение
+            orig_e, orig_t, orig_m = run_original()
+            quant_e, quant_t, quant_m = run_quant()
+            cos = cosine_similarity(to_vector(orig_e), to_vector(quant_e))
+            results.append({"Model": "Original", "Latency (s)": orig_t, "Memory (MB)": orig_m})
+            results.append({"Model": "Quantized", "Latency (s)": quant_t, "Memory (MB)": quant_m, "Cosine Sim": cos})
 
-        df = pd.DataFrame(metrics)
+        df = pd.DataFrame(results)
         st.dataframe(df)
 
         csv = df.to_csv(index=False).encode("utf-8")
