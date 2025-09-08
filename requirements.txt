@@ -6,3 +6,4 @@ psutil
 numpy
 torch
 gdown
+datasets
