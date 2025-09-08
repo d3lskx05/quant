@@ -7,19 +7,64 @@ from sentence_transformers import SentenceTransformer
 import torch
 import onnxruntime as ort
 from numpy.linalg import norm
+import os
+import zipfile
+import gdown
+import huggingface_hub
+from pathlib import Path
 
 # ======================
 # Вспомогательные функции
 # ======================
+
+def download_model(source, model_id, model_dir):
+    """Скачивает модель с GDrive или HF."""
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    if any(model_dir.glob("*")):
+        print(f"📂 Модель уже есть в {model_dir}")
+        return model_dir
+
+    if source == "gdrive":
+        zip_path = f"{model_dir}.zip"
+        print(f"📥 Скачиваю модель с Google Drive: {model_id}")
+        gdown.download(f"https://drive.google.com/uc?id={model_id}", str(zip_path), quiet=False)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(model_dir)
+        os.remove(zip_path)
+    elif source == "hf":
+        print(f"📥 Скачиваю модель с Hugging Face: {model_id}")
+        huggingface_hub.snapshot_download(
+            repo_id=model_id,
+            local_dir=model_dir,
+            local_dir_use_symlinks=False
+        )
+    else:
+        raise ValueError(f"❌ Неизвестный источник: {source}")
+    return model_dir
+
+
+def find_quantized_file(model_dir):
+    """Ищет квантованный ONNX-файл в папке модели."""
+    model_dir = Path(model_dir)
+    quant_files = list(model_dir.rglob("model_quantized.onnx"))
+    if quant_files:
+        print(f"✅ Найден квантованный файл: {quant_files[0]}")
+        return str(quant_files[0])
+    print("⚠️ Квантованный файл не найден, загружаем обычную модель")
+    return None
+
 
 @st.cache_resource
 def load_model(model_path, model_type="sentence-transformers", quantized=False):
     """Загрузка модели (оригинал или квантованная)."""
     if model_type == "sentence-transformers":
         if quantized:
-            return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": "model_quantized.onnx"})
-        else:
-            return SentenceTransformer(model_path)
+            quant_file = find_quantized_file(model_path)
+            if quant_file:
+                return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": Path(quant_file).name})
+        return SentenceTransformer(model_path)
     elif model_type == "transformers":
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         model = AutoModel.from_pretrained(model_path)
@@ -29,6 +74,7 @@ def load_model(model_path, model_type="sentence-transformers", quantized=False):
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = ["CPUExecutionProvider"]
         return ort.InferenceSession(model_path, sess_options=so, providers=providers)
+
 
 def measure_resources(func, *args, **kwargs):
     """Измерение времени, RAM и CPU."""
@@ -50,9 +96,11 @@ def measure_resources(func, *args, **kwargs):
         "cpu": end_cpu
     }
 
+
 def cosine_similarity(vec1, vec2):
     """Косинусная схожесть."""
     return np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
+
 
 # ======================
 # Интерфейс Streamlit
@@ -63,16 +111,24 @@ st.title("🔍 Тестер квантизованных моделей")
 # Ввод текста
 input_text = st.text_area("Введите текст:", "Это тестовое предложение.")
 
-# Пути к моделям
-original_model_path = st.text_input("Путь к оригинальной модели или HF repo_id:", "deepvk/USER-BGE-M3")
-quantized_model_path = st.text_input("Путь к квантованной модели:", "onnx-user-bge-m3")
+# Выбор источника модели
+source_choice = st.radio("Выберите источник модели:", ["gdrive", "hf"])
+
+# ID моделей
+original_id = st.text_input("ID/Repo оригинальной модели:", "deepvk/USER-BGE-M3")
+quantized_id = st.text_input("ID/Repo квантованной модели:", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
 
 # Кнопка запуска
 if st.button("🔎 Запустить тест"):
-    st.write("⏳ Загружаю модели...")
+    st.write("⏳ Скачиваю и загружаю модели...")
 
-    original_model = load_model(original_model_path, model_type="sentence-transformers")
-    quantized_model = load_model(quantized_model_path, model_type="sentence-transformers", quantized=True)
+    # Скачиваем модели
+    orig_dir = download_model(source_choice, original_id, "original_model")
+    quant_dir = download_model(source_choice, quantized_id, "quantized_model")
+
+    # Загружаем модели
+    original_model = load_model(str(orig_dir), model_type="sentence-transformers")
+    quantized_model = load_model(str(quant_dir), model_type="sentence-transformers", quantized=True)
 
     # Кодирование
     st.write("⚡ Измеряю производительность оригинальной модели...")
