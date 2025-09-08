@@ -1,7 +1,7 @@
 streamlit
-gdown
-psutil
 transformers
+sentence-transformers
 onnxruntime
-torch
+psutil
 numpy
+torch
