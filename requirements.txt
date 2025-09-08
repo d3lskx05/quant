@@ -1,6 +1,7 @@
 streamlit
 gdown
 psutil
-sentence-transformers
-onnxruntime
-
+transformers
+optimum[onnxruntime]
+torch
+numpy
