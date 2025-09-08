@@ -10,6 +10,7 @@ import gdown
 import huggingface_hub
 import numpy as np
 import psutil
+import pandas as pd
 import streamlit as st
 import onnxruntime as ort
 from numpy.linalg import norm
@@ -19,15 +20,10 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (встроен сюда, с кэшированием и force_download)
+# 🔥 QuantModel
 # ============================================================
 class QuantModel:
-    """
-    Универсальный загрузчик квантизированных ONNX моделей.
-    Источники: Google Drive (gdrive), Hugging Face Hub (hf), локальная (local).
-    Поддержка кэширования и флага force_download.
-    """
-
+    """Универсальный загрузчик квантизированных ONNX моделей."""
     def __init__(self, model_id: str, source: str = "gdrive",
                  model_dir: str = "onnx_model", tokenizer_name: Optional[str] = None,
                  force_download: bool = False):
@@ -43,23 +39,17 @@ class QuantModel:
         self.tokenizer = self._load_tokenizer()
 
     def _ensure_model(self):
-        """Скачивание и распаковка модели, с учётом кэширования."""
         os.makedirs(self.model_dir, exist_ok=True)
-
         need_download = self.force_download or not any(self.model_dir.glob("*.onnx"))
 
         if need_download:
             if self.source == "gdrive":
                 zip_path = f"{self.model_dir}.zip"
-                print(f"📥 Скачиваю модель с Google Drive: {self.model_id}")
                 gdown.download(f"https://drive.google.com/uc?id={self.model_id}", zip_path, quiet=False)
-                print(f"📦 Распаковка {zip_path}...")
                 with zipfile.ZipFile(zip_path, "r") as zf:
                     zf.extractall(self.model_dir)
                 os.remove(zip_path)
-
             elif self.source == "hf":
-                print(f"📥 Скачиваю модель с Hugging Face: {self.model_id}")
                 huggingface_hub.snapshot_download(
                     repo_id=self.model_id,
                     local_dir=self.model_dir,
@@ -67,18 +57,10 @@ class QuantModel:
                     resume_download=True
                 )
 
-            elif self.source == "local":
-                print(f"📂 Использую локальную модель: {self.model_dir}")
-            else:
-                raise ValueError(f"❌ Неизвестный источник: {self.source}")
-        else:
-            print(f"✅ Использую закэшированную модель из {self.model_dir}")
-
         onnx_files = list(self.model_dir.rglob("*.onnx"))
         if not onnx_files:
-            raise FileNotFoundError(f"❌ В {self.model_dir} не найден .onnx файл!")
+            raise FileNotFoundError(f"❌ Нет .onnx модели в {self.model_dir}")
         self.model_path = onnx_files[0]
-        print(f"✅ Найден ONNX файл: {self.model_path}")
 
     def _load_session(self):
         so = ort.SessionOptions()
@@ -89,7 +71,6 @@ class QuantModel:
                 providers.insert(0, "CUDAExecutionProvider")
         except Exception:
             pass
-        print(f"🚀 Загружаю модель на провайдерах: {providers}")
         return ort.InferenceSession(str(self.model_path), sess_options=so, providers=providers)
 
     def _load_tokenizer(self):
@@ -98,7 +79,6 @@ class QuantModel:
         try:
             return AutoTokenizer.from_pretrained(str(self.model_dir))
         except Exception:
-            print("⚠️ Токенайзер не найден в папке, используем deepvk/USER-BGE-M3")
             return AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3")
 
     @lru_cache(maxsize=1024)
@@ -121,24 +101,12 @@ class QuantModel:
 # 🔧 Helpers
 # ============================================================
 def to_vector(embs):
-    """
-    Приводим любые эмбеддинги к вектору фиксированной размерности:
-    - Если батч: усредняем по batch_size
-    - Если seq_len x hidden_size: усредняем по seq_len
-    """
     arr = np.array(embs)
-    arr = np.squeeze(arr)  # убираем лишние оси
-
     if arr.ndim == 1:
         return arr
-
-    if arr.ndim == 2:
-        return arr.mean(axis=0)
-
-    if arr.ndim == 3:
-        return arr.mean(axis=(0, 1))
-
-    raise ValueError(f"Неожиданная форма эмбеддингов: {arr.shape}")
+    if arr.ndim == 2 and arr.shape[0] == 1:
+        return arr[0]
+    return arr.mean(axis=0)
 
 
 def cosine_similarity(vec1, vec2):
@@ -148,90 +116,82 @@ def cosine_similarity(vec1, vec2):
 # ============================================================
 # 🎛️ UI
 # ============================================================
-st.title("🔍 Сравнение оригинальной и квантованной моделей")
+st.title("🔍 Тестирование моделей: Оригинал vs Квант")
 
-st.markdown(
-    """
-    - Оригинал грузим через **SentenceTransformer**.
-    - Квантованную модель грузим через **QuantModel** (onnxruntime, память экономится).
-    """
-)
+mode = st.radio("Выберите режим:", ["Оригинальная модель", "Квантованная модель"])
 
-col1, col2 = st.columns(2)
-with col1:
-    st.header("Оригинальная модель")
-    orig_id = st.text_input("HF repo ID или локальный путь", "deepvk/USER-BGE-M3")
-
-with col2:
-    st.header("Квантованная модель")
-    quant_source = st.selectbox("Источник", ["gdrive", "hf", "local"], index=1)
-    quant_id = st.text_input("ID/Repo/Path", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
-    quant_dir = st.text_input("Папка для кванта (локальная)", "onnx-user-bge-m3")
-    tokenizer_name = st.text_input("Tokenizer name (опционально)", "")
-    force_download = st.checkbox("♻️ Перекачать модель заново", False)
-
-st.markdown("---")
 input_text = st.text_area("Тексты для теста (по одной строке)", "Это тестовое предложение.\nПример второй строки.")
 texts = [t.strip() for t in input_text.split("\n") if t.strip()]
 
 batch_size = st.slider("Количество повторов для throughput-теста", 1, 128, 8)
+force_download = st.checkbox("♻️ Перекачать модель заново", False)
+
+metrics = {}
+
+if mode == "Оригинальная модель":
+    model_id = st.text_input("HF repo ID", "deepvk/USER-BGE-M3")
+else:
+    col1, col2 = st.columns(2)
+    with col1:
+        quant_source = st.selectbox("Источник", ["gdrive", "hf", "local"], index=1)
+        quant_id = st.text_input("ID/Repo/Path", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
+    with col2:
+        quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3")
+        tokenizer_name = st.text_input("Tokenizer name", "")
+
 run_button = st.button("🚀 Запустить тест")
 
 # ============================================================
-# 🚀 Основная логика
+# 🚀 Запуск теста
 # ============================================================
 if run_button:
     try:
         proc = psutil.Process()
-
-        # --- Загружаем оригинал через SentenceTransformer
-        with st.spinner("Загрузка оригинальной модели..."):
-            orig_model = SentenceTransformer(orig_id)
-            st.success(f"✅ Оригинал загружен из {orig_id}")
-
-        # --- Загружаем квант через QuantModel
-        with st.spinner("Загрузка квантованной модели..."):
-            quant_model = QuantModel(
-                model_id=quant_id,
-                source=quant_source,
-                model_dir=quant_dir,
-                tokenizer_name=tokenizer_name if tokenizer_name else None,
-                force_download=force_download
-            )
-            st.success(f"✅ Квантованная модель загружена ({quant_model.model_path})")
-
         texts_for_run = (texts * batch_size)[:max(len(texts), 1)]
 
-        # Оригинал
-        t0 = time.perf_counter()
-        orig_embs = orig_model.encode(texts_for_run, normalize_embeddings=True)
-        t1 = time.perf_counter()
-        orig_time = t1 - t0
-        mem_after_orig = proc.memory_info().rss / 1024 ** 2
+        if mode == "Оригинальная модель":
+            with st.spinner("Загрузка оригинальной модели..."):
+                model = SentenceTransformer(model_id)
+            t0 = time.perf_counter()
+            embs = model.encode(texts_for_run, normalize_embeddings=True)
+            t1 = time.perf_counter()
+        else:
+            with st.spinner("Загрузка квантованной модели..."):
+                model = QuantModel(
+                    model_id=quant_id,
+                    source=quant_source,
+                    model_dir=quant_dir,
+                    tokenizer_name=tokenizer_name if tokenizer_name else None,
+                    force_download=force_download
+                )
+            t0 = time.perf_counter()
+            embs = model.encode(texts_for_run, normalize=True)
+            t1 = time.perf_counter()
 
-        # Квант
-        t0 = time.perf_counter()
-        quant_embs = quant_model.encode(texts_for_run, normalize=True)
-        t1 = time.perf_counter()
-        quant_time = t1 - t0
-        mem_after_quant = proc.memory_info().rss / 1024 ** 2
+        latency = t1 - t0
+        memory = proc.memory_info().rss / 1024 ** 2
 
-        v_orig = to_vector(orig_embs)
-        v_quant = to_vector(quant_embs)
-        cos = cosine_similarity(v_orig, v_quant)
+        metrics = {
+            "Mode": [mode],
+            "Batch Size": [batch_size],
+            "Latency (s)": [latency],
+            "Memory (MB)": [memory],
+        }
 
-        # Вывод
         st.subheader("📊 Результаты")
-        st.metric("Latency Original (s)", f"{orig_time:.4f}")
-        st.metric("Latency Quant (s)", f"{quant_time:.4f}")
-        st.metric("Cosine Similarity", f"{cos:.4f}")
-        st.write(f"Memory after original: {mem_after_orig:.1f} MB")
-        st.write(f"Memory after quant: {mem_after_quant:.1f} MB")
+        st.metric("Latency (s)", f"{latency:.4f}")
+        st.metric("Memory (MB)", f"{memory:.1f}")
 
-        st.bar_chart({
-            "Latency (s)": [orig_time, quant_time],
-            "Memory (MB)": [mem_after_orig, mem_after_quant]
-        })
+        df = pd.DataFrame(metrics)
+        st.dataframe(df)
+
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Скачать результаты (CSV)",
+            data=csv,
+            file_name="metrics.csv",
+            mime="text/csv",
+        )
 
     except Exception as e:
         st.error(f"Ошибка: {e}")
