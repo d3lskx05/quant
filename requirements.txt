@@ -1,0 +1,6 @@
+streamlit
+psutil
+sentence-transformers
+optimum[onnxruntime]
+gdown
+numpy
