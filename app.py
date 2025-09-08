@@ -17,14 +17,15 @@ from pathlib import Path
 # Вспомогательные функции
 # ======================
 
+@st.cache_resource
 def download_model(source, model_id, model_dir):
-    """Скачивает модель с GDrive или HF."""
+    """Скачивает модель с GDrive или HF (с кэшированием)."""
     model_dir = Path(model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
     if any(model_dir.glob("*")):
         print(f"📂 Модель уже есть в {model_dir}")
-        return model_dir
+        return str(model_dir)
 
     if source == "gdrive":
         zip_path = f"{model_dir}.zip"
@@ -42,7 +43,7 @@ def download_model(source, model_id, model_dir):
         )
     else:
         raise ValueError(f"❌ Неизвестный источник: {source}")
-    return model_dir
+    return str(model_dir)
 
 
 def find_quantized_file(model_dir):
@@ -128,8 +129,8 @@ if st.button("🔎 Запустить тест"):
     quant_dir = download_model(quant_source, quantized_id, "quantized_model")
 
     # Загружаем модели
-    original_model = load_model(str(orig_dir), model_type="sentence-transformers")
-    quantized_model = load_model(str(quant_dir), model_type="sentence-transformers", quantized=True)
+    original_model = load_model(orig_dir, model_type="sentence-transformers")
+    quantized_model = load_model(quant_dir, model_type="sentence-transformers", quantized=True)
 
     # Кодирование
     st.write("⚡ Измеряю производительность оригинальной модели...")
