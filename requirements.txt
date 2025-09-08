@@ -1,1 +1,6 @@
+streamlit
+gdown
+psutil
+sentence-transformers
+onnxruntime
 
