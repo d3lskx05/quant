@@ -6,5 +6,3 @@ psutil
 numpy
 torch
 gdown
-datasets
-pyarrow==14.0.2
