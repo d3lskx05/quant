@@ -121,13 +121,24 @@ class QuantModel:
 # 🔧 Helpers
 # ============================================================
 def to_vector(embs):
-    """Превращает батч эмбеддингов в один вектор (усреднение)."""
+    """
+    Приводим любые эмбеддинги к вектору фиксированной размерности:
+    - Если батч: усредняем по batch_size
+    - Если seq_len x hidden_size: усредняем по seq_len
+    """
     arr = np.array(embs)
+    arr = np.squeeze(arr)  # убираем лишние оси
+
     if arr.ndim == 1:
         return arr
-    if arr.ndim == 2 and arr.shape[0] == 1:
-        return arr[0]
-    return arr.mean(axis=0)
+
+    if arr.ndim == 2:
+        return arr.mean(axis=0)
+
+    if arr.ndim == 3:
+        return arr.mean(axis=(0, 1))
+
+    raise ValueError(f"Неожиданная форма эмбеддингов: {arr.shape}")
 
 
 def cosine_similarity(vec1, vec2):
@@ -207,12 +218,6 @@ if run_button:
 
         v_orig = to_vector(orig_embs)
         v_quant = to_vector(quant_embs)
-        if v_orig.shape != v_quant.shape:
-            st.warning(f"Размерности различаются: {v_orig.shape} vs {v_quant.shape}, усечем до min.")
-            m = min(v_orig.size, v_quant.size)
-            v_orig = v_orig[:m]
-            v_quant = v_quant[:m]
-
         cos = cosine_similarity(v_orig, v_quant)
 
         # Вывод
