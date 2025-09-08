@@ -23,18 +23,15 @@ def download_model(source, model_id, model_dir):
     model_dir.mkdir(parents=True, exist_ok=True)
 
     if any(model_dir.glob("*")):
-        print(f"📂 Модель уже есть в {model_dir}")
         return str(model_dir)
 
     if source == "gdrive":
         zip_path = f"{model_dir}.zip"
-        print(f"📥 Скачиваю модель с Google Drive: {model_id}")
         gdown.download(f"https://drive.google.com/uc?id={model_id}", str(zip_path), quiet=False)
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(model_dir)
         os.remove(zip_path)
     elif source == "hf":
-        print(f"📥 Скачиваю модель с Hugging Face: {model_id}")
         huggingface_hub.snapshot_download(
             repo_id=model_id,
             local_dir=model_dir,
@@ -49,21 +46,32 @@ def find_quantized_file(model_dir):
     """Ищет квантованный ONNX-файл в папке модели."""
     model_dir = Path(model_dir)
     quant_files = list(model_dir.rglob("model_quantized.onnx"))
-    if quant_files:
-        print(f"✅ Найден квантованный файл: {quant_files[0]}")
-        return str(quant_files[0])
-    print("⚠️ Квантованный файл не найден, загружаем обычную модель")
-    return None
+    return str(quant_files[0]) if quant_files else None
 
 
 @st.cache_resource
 def load_model(model_path, quantized=False):
-    """Загрузка модели (SentenceTransformers/ONNX)."""
+    """Загрузка модели: SentenceTransformers или ONNX напрямую."""
     if quantized:
         quant_file = find_quantized_file(model_path)
         if quant_file:
-            return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": Path(quant_file).name})
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            return ort.InferenceSession(quant_file, sess_options=so, providers=["CPUExecutionProvider"])
+        else:
+            st.warning("⚠️ Квантованный файл не найден, загружаем обычную модель")
     return SentenceTransformer(model_path)
+
+
+def encode_onnx(session, tokenizer, text):
+    """Кодирование текста через чистый ONNX Runtime."""
+    import torch
+    from transformers import AutoTokenizer
+
+    inputs = tokenizer(text, return_tensors="np", padding=True, truncation=True)
+    ort_inputs = {k: v for k, v in inputs.items()}
+    ort_outs = session.run(None, ort_inputs)
+    return ort_outs[0]
 
 
 def measure_resources(func, *args, **kwargs):
@@ -113,25 +121,25 @@ quantized_id = st.text_input("ID/Repo квантованной модели:", "
 if st.button("🔎 Запустить тест"):
     st.write("⏳ Скачиваю и загружаю модели...")
 
-    # Скачиваем модели отдельно
     orig_dir = download_model(orig_source, original_id, "original_model")
     quant_dir = download_model(quant_source, quantized_id, "quantized_model")
 
-    # Загружаем модели
     original_model = load_model(orig_dir, quantized=False)
     quantized_model = load_model(quant_dir, quantized=True)
 
-    # Кодирование
     st.write("⚡ Измеряю производительность оригинальной модели...")
     orig = measure_resources(original_model.encode, [input_text], normalize_embeddings=True)
 
     st.write("⚡ Измеряю производительность квантованной модели...")
-    quant = measure_resources(quantized_model.encode, [input_text], normalize_embeddings=True)
+    if isinstance(quantized_model, ort.InferenceSession):
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(orig_dir)
+        quant = measure_resources(encode_onnx, quantized_model, tokenizer, [input_text])
+    else:
+        quant = measure_resources(quantized_model.encode, [input_text], normalize_embeddings=True)
 
-    # Качество
     similarity = cosine_similarity(orig["result"][0], quant["result"][0])
 
-    # Вывод результатов
     st.subheader("📊 Результаты")
     st.write(f"**Время (оригинал):** {orig['time']:.4f} сек")
     st.write(f"**Время (квант):** {quant['time']:.4f} сек")
@@ -140,7 +148,6 @@ if st.button("🔎 Запустить тест"):
     st.write(f"**CPU нагрузка:** {quant['cpu']}%")
     st.write(f"**Косинусная схожесть:** {similarity:.4f}")
 
-    # Графики
     st.bar_chart({
         "Время (сек)": [orig["time"], quant["time"]],
         "RAM (MB)": [orig["ram_used"], quant["ram_used"]]
