@@ -6,7 +6,6 @@ import os
 import psutil
 import time
 import numpy as np
-import torch
 import onnxruntime as ort
 from transformers import AutoTokenizer
 
@@ -16,34 +15,38 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="USER-BGE-M3 ONNX Test", layout="wide")
 st.title("🔍 Тестирование квантизованной модели USER-BGE-M3 (int8)")
 
-# Ссылка на ZIP-архив в GDrive
 MODEL_URL = "https://drive.google.com/uc?id=1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36"
 ZIP_PATH = Path("user_bge_m3.zip")
 MODEL_DIR = Path("onnx-user-bge-m3")
-MODEL_FILE = MODEL_DIR / "model_quantized.onnx"
 
 
 # ========================
-# 📥 Функция загрузки и распаковки
+# 📥 Загрузка и распаковка
 # ========================
 @st.cache_resource
 def load_model():
-    # 1. Скачиваем ZIP, если нет
+    # 1. Скачиваем архив, если нет
     if not ZIP_PATH.exists():
         st.write("📥 Скачиваю архив модели...")
         gdown.download(MODEL_URL, str(ZIP_PATH), quiet=False, fuzzy=True)
 
-    # 2. Распаковка
-    if not MODEL_FILE.exists():
+    # 2. Распаковываем, если папки нет
+    if not MODEL_DIR.exists():
         st.write("📦 Распаковываю модель...")
-        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+        with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
             zip_ref.extractall(MODEL_DIR)
 
-    # 3. Загрузка ONNX
-    st.write("⚙️ Загружаю модель...")
-    session = ort.InferenceSession(str(MODEL_FILE), providers=["CPUExecutionProvider"])
+    # 3. Ищем первый .onnx файл
+    onnx_files = list(MODEL_DIR.rglob("*.onnx"))
+    if not onnx_files:
+        raise FileNotFoundError("❌ В архиве не найден .onnx файл!")
+    model_path = onnx_files[0]
+    st.write(f"✅ Найден ONNX файл: {model_path}")
 
-    # 4. Загружаем токенайзер с HuggingFace Hub
+    # 4. Загружаем ONNX-модель
+    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+
+    # 5. Загружаем токенайзер
     tokenizer = AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3")
 
     return session, tokenizer
