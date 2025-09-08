@@ -1,6 +1,7 @@
 import streamlit as st
 from pathlib import Path
 import gdown
+import zipfile
 import os
 import psutil
 import time
@@ -15,28 +16,42 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="USER-BGE-M3 ONNX Test", layout="wide")
 st.title("🔍 Тестирование квантизованной модели USER-BGE-M3 (int8)")
 
+# Ссылка на ZIP-архив в GDrive
 MODEL_URL = "https://drive.google.com/uc?id=1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36"
+ZIP_PATH = Path("user_bge_m3.zip")
 MODEL_DIR = Path("onnx-user-bge-m3")
 MODEL_FILE = MODEL_DIR / "model_quantized.onnx"
 
 
 # ========================
-# 📥 Загрузка модели
+# 📥 Функция загрузки и распаковки
 # ========================
 @st.cache_resource
 def load_model():
-    MODEL_DIR.mkdir(exist_ok=True)
+    # 1. Скачиваем ZIP, если нет
+    if not ZIP_PATH.exists():
+        st.write("📥 Скачиваю архив модели...")
+        gdown.download(MODEL_URL, str(ZIP_PATH), quiet=False, fuzzy=True)
 
+    # 2. Распаковка
     if not MODEL_FILE.exists():
-        st.write("📥 Скачиваю модель с Google Drive...")
-        gdown.download(MODEL_URL, str(MODEL_FILE), quiet=False)
+        st.write("📦 Распаковываю модель...")
+        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+            zip_ref.extractall(MODEL_DIR)
 
-    # Загружаем ONNX модель
+    # 3. Загрузка ONNX
+    st.write("⚙️ Загружаю модель...")
     session = ort.InferenceSession(str(MODEL_FILE), providers=["CPUExecutionProvider"])
-    tokenizer = AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3")  # оригинальный токенайзер
+
+    # 4. Загружаем токенайзер с HuggingFace Hub
+    tokenizer = AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3")
+
     return session, tokenizer
 
 
+# ========================
+# 🚀 Загрузка модели
+# ========================
 session, tokenizer = load_model()
 st.success("✅ Модель готова к использованию!")
 
@@ -61,10 +76,8 @@ if st.button("🔍 Запустить инференс"):
     # Токенизация
     inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="np")
 
-    # Подготовка входов для ONNX
+    # Прогон через ONNX
     ort_inputs = {k: v for k, v in inputs.items()}
-
-    # Прогон через модель
     ort_outputs = session.run(None, ort_inputs)
     embeddings = ort_outputs[0].mean(axis=1)
 
