@@ -4,16 +4,18 @@ import gdown
 import os
 import psutil
 import time
-from sentence_transformers import SentenceTransformer
+import torch
+import numpy as np
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForFeatureExtraction
 
 # ========================
 # 🔹 Конфигурация страницы
 # ========================
 st.set_page_config(
-    page_title="USER-BGE-M3 Quantized Test",
+    page_title="USER-BGE-M3 Quantized ONNX Test",
     layout="wide"
 )
-
 st.title("🔍 Тестирование квантизованной модели USER-BGE-M3 (int8)")
 
 MODEL_URL = "https://drive.google.com/uc?id=1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36"
@@ -25,28 +27,23 @@ MODEL_FILE = MODEL_DIR / "model_quantized.onnx"
 # 📥 Функция загрузки модели
 # ========================
 @st.cache_resource
-def load_model():
+def load_model_and_tokenizer():
     MODEL_DIR.mkdir(exist_ok=True)
 
-    # Скачиваем модель, если её нет
     if not MODEL_FILE.exists():
         st.write("📥 Скачиваю модель с Google Drive...")
         gdown.download(MODEL_URL, str(MODEL_FILE), quiet=False)
 
-    # Загружаем SentenceTransformer
     st.write("⚙️ Загружаю модель...")
-    model = SentenceTransformer(
-        str(MODEL_DIR),
-        backend="onnx",
-        model_kwargs={"file_name": MODEL_FILE.name}
-    )
-    return model
+    model = ORTModelForFeatureExtraction.from_pretrained(MODEL_DIR, file_name=MODEL_FILE.name)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
+    return model, tokenizer
 
 
 # ========================
 # 🚀 Загрузка модели
 # ========================
-model = load_model()
+model, tokenizer = load_model_and_tokenizer()
 st.success("✅ Модель готова к использованию!")
 
 
@@ -67,7 +64,19 @@ if st.button("🔍 Запустить инференс"):
     mem_before = process.memory_info().rss / (1024 ** 2)
 
     start_time = time.perf_counter()
-    embeddings = model.encode(texts, normalize_embeddings=True)
+
+    # Токенизация
+    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt")
+
+    # Прогон через модель
+    with torch.no_grad():
+        outputs = model(**inputs)
+        embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+
+    # Нормализация
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    embeddings = embeddings / norms
+
     end_time = time.perf_counter()
 
     # Метрики после
@@ -90,4 +99,3 @@ if st.button("🔍 Запустить инференс"):
     col3.metric("Память (MB)", f"{mem_after:.1f}")
 
     st.success("Тестирование завершено!")
-
