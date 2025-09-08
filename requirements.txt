@@ -4,3 +4,4 @@ sentence-transformers
 optimum[onnxruntime]
 gdown
 numpy
+pyarrow<17
