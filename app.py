@@ -1,4 +1,3 @@
-# app.py
 import os
 import zipfile
 import time
@@ -20,21 +19,23 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (встроен сюда)
+# 🔥 QuantModel (встроен сюда, с кэшированием и force_download)
 # ============================================================
 class QuantModel:
     """
     Универсальный загрузчик квантизированных ONNX моделей.
     Источники: Google Drive (gdrive), Hugging Face Hub (hf), локальная (local).
-    Автопоиск .onnx файла и кэширование модели.
+    Поддержка кэширования и флага force_download.
     """
 
     def __init__(self, model_id: str, source: str = "gdrive",
-                 model_dir: str = "onnx_model", tokenizer_name: Optional[str] = None):
+                 model_dir: str = "onnx_model", tokenizer_name: Optional[str] = None,
+                 force_download: bool = False):
         self.model_id = model_id
         self.source = source
         self.model_dir = Path(model_dir)
         self.tokenizer_name = tokenizer_name
+        self.force_download = force_download
         self.model_path = None
 
         self._ensure_model()
@@ -42,10 +43,12 @@ class QuantModel:
         self.tokenizer = self._load_tokenizer()
 
     def _ensure_model(self):
-        """Скачивание и распаковка модели, если она не локальная."""
+        """Скачивание и распаковка модели, с учётом кэширования."""
         os.makedirs(self.model_dir, exist_ok=True)
 
-        if not any(self.model_dir.glob("*.onnx")):
+        need_download = self.force_download or not any(self.model_dir.glob("*.onnx"))
+
+        if need_download:
             if self.source == "gdrive":
                 zip_path = f"{self.model_dir}.zip"
                 print(f"📥 Скачиваю модель с Google Drive: {self.model_id}")
@@ -60,13 +63,16 @@ class QuantModel:
                 huggingface_hub.snapshot_download(
                     repo_id=self.model_id,
                     local_dir=self.model_dir,
-                    local_dir_use_symlinks=False
+                    local_dir_use_symlinks=False,
+                    resume_download=True
                 )
 
             elif self.source == "local":
                 print(f"📂 Использую локальную модель: {self.model_dir}")
             else:
                 raise ValueError(f"❌ Неизвестный источник: {self.source}")
+        else:
+            print(f"✅ Использую закэшированную модель из {self.model_dir}")
 
         onnx_files = list(self.model_dir.rglob("*.onnx"))
         if not onnx_files:
@@ -151,6 +157,7 @@ with col2:
     quant_id = st.text_input("ID/Repo/Path", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
     quant_dir = st.text_input("Папка для кванта (локальная)", "onnx-user-bge-m3")
     tokenizer_name = st.text_input("Tokenizer name (опционально)", "")
+    force_download = st.checkbox("♻️ Перекачать модель заново", False)
 
 st.markdown("---")
 input_text = st.text_area("Тексты для теста (по одной строке)", "Это тестовое предложение.\nПример второй строки.")
@@ -177,7 +184,8 @@ if run_button:
                 model_id=quant_id,
                 source=quant_source,
                 model_dir=quant_dir,
-                tokenizer_name=tokenizer_name if tokenizer_name else None
+                tokenizer_name=tokenizer_name if tokenizer_name else None,
+                force_download=force_download
             )
             st.success(f"✅ Квантованная модель загружена ({quant_model.model_path})")
 
