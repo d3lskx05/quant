@@ -1,112 +1,100 @@
-import streamlit as st
-from pathlib import Path
-import gdown
-import zipfile
-import os
-import psutil
 import time
+import psutil
 import numpy as np
+import streamlit as st
+from transformers import AutoTokenizer, AutoModel
+from sentence_transformers import SentenceTransformer
+import torch
 import onnxruntime as ort
-from transformers import AutoTokenizer
+from numpy.linalg import norm
 
-# ========================
-# 🔹 Конфигурация страницы
-# ========================
-st.set_page_config(page_title="USER-BGE-M3 ONNX Test", layout="wide")
-st.title("🔍 Тестирование квантизованной модели USER-BGE-M3 (int8)")
+# ======================
+# Вспомогательные функции
+# ======================
 
-MODEL_URL = "https://drive.google.com/uc?id=1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36"
-ZIP_PATH = Path("user_bge_m3.zip")
-MODEL_DIR = Path("onnx-user-bge-m3")
-
-
-# ========================
-# 📥 Загрузка и распаковка
-# ========================
 @st.cache_resource
-def load_model():
-    # 1. Скачиваем архив, если нет
-    if not ZIP_PATH.exists():
-        st.write("📥 Скачиваю архив модели...")
-        gdown.download(MODEL_URL, str(ZIP_PATH), quiet=False, fuzzy=True)
+def load_model(model_path, model_type="sentence-transformers", quantized=False):
+    """Загрузка модели (оригинал или квантованная)."""
+    if model_type == "sentence-transformers":
+        if quantized:
+            return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": "model_quantized.onnx"})
+        else:
+            return SentenceTransformer(model_path)
+    elif model_type == "transformers":
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModel.from_pretrained(model_path)
+        return model, tokenizer
+    elif model_type == "onnx":
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = ["CPUExecutionProvider"]
+        return ort.InferenceSession(model_path, sess_options=so, providers=providers)
 
-    # 2. Распаковываем, если папки нет
-    if not MODEL_DIR.exists():
-        st.write("📦 Распаковываю модель...")
-        with zipfile.ZipFile(ZIP_PATH, "r") as zip_ref:
-            zip_ref.extractall(MODEL_DIR)
+def measure_resources(func, *args, **kwargs):
+    """Измерение времени, RAM и CPU."""
+    process = psutil.Process()
+    start_mem = process.memory_info().rss / 1024**2
+    start_cpu = psutil.cpu_percent(interval=None)
 
-    # 3. Ищем первый .onnx файл
-    onnx_files = list(MODEL_DIR.rglob("*.onnx"))
-    if not onnx_files:
-        raise FileNotFoundError("❌ В архиве не найден .onnx файл!")
-    model_path = onnx_files[0]
-    st.write(f"✅ Найден ONNX файл: {model_path}")
+    start_time = time.time()
+    result = func(*args, **kwargs)
+    end_time = time.time()
 
-    # 4. Загружаем ONNX-модель
-    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+    end_mem = process.memory_info().rss / 1024**2
+    end_cpu = psutil.cpu_percent(interval=None)
 
-    # 5. Загружаем токенайзер
-    tokenizer = AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3")
+    return {
+        "result": result,
+        "time": end_time - start_time,
+        "ram_used": end_mem - start_mem,
+        "cpu": end_cpu
+    }
 
-    return session, tokenizer
+def cosine_similarity(vec1, vec2):
+    """Косинусная схожесть."""
+    return np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
 
+# ======================
+# Интерфейс Streamlit
+# ======================
 
-# ========================
-# 🚀 Загрузка модели
-# ========================
-session, tokenizer = load_model()
-st.success("✅ Модель готова к использованию!")
+st.title("🔍 Тестер квантизованных моделей")
 
+# Ввод текста
+input_text = st.text_area("Введите текст:", "Это тестовое предложение.")
 
-# ========================
-# 📝 Интерфейс
-# ========================
-texts = st.text_area(
-    "Введите текст(ы) для кодирования (по одному на строку):",
-    "Это тестовое предложение.\nПример использования модели."
-).split("\n")
+# Пути к моделям
+original_model_path = st.text_input("Путь к оригинальной модели или HF repo_id:", "deepvk/USER-BGE-M3")
+quantized_model_path = st.text_input("Путь к квантованной модели:", "onnx-user-bge-m3")
 
-if st.button("🔍 Запустить инференс"):
-    process = psutil.Process(os.getpid())
+# Кнопка запуска
+if st.button("🔎 Запустить тест"):
+    st.write("⏳ Загружаю модели...")
 
-    # Метрики до
-    cpu_before = psutil.cpu_percent(interval=1)
-    mem_before = process.memory_info().rss / (1024 ** 2)
+    original_model = load_model(original_model_path, model_type="sentence-transformers")
+    quantized_model = load_model(quantized_model_path, model_type="sentence-transformers", quantized=True)
 
-    start = time.perf_counter()
+    # Кодирование
+    st.write("⚡ Измеряю производительность оригинальной модели...")
+    orig = measure_resources(original_model.encode, [input_text], normalize_embeddings=True)
 
-    # Токенизация
-    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="np")
+    st.write("⚡ Измеряю производительность квантованной модели...")
+    quant = measure_resources(quantized_model.encode, [input_text], normalize_embeddings=True)
 
-    # Прогон через ONNX
-    ort_inputs = {k: v for k, v in inputs.items()}
-    ort_outputs = session.run(None, ort_inputs)
-    embeddings = ort_outputs[0].mean(axis=1)
+    # Качество
+    similarity = cosine_similarity(orig["result"][0], quant["result"][0])
 
-    # Нормализация
-    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-    embeddings = embeddings / norms
+    # Вывод результатов
+    st.subheader("📊 Результаты")
+    st.write(f"**Время (оригинал):** {orig['time']:.4f} сек")
+    st.write(f"**Время (квант):** {quant['time']:.4f} сек")
+    st.write(f"**RAM (оригинал):** {orig['ram_used']:.2f} MB")
+    st.write(f"**RAM (квант):** {quant['ram_used']:.2f} MB")
+    st.write(f"**CPU нагрузка:** {quant['cpu']}%")
+    st.write(f"**Косинусная схожесть:** {similarity:.4f}")
 
-    end = time.perf_counter()
-
-    # Метрики после
-    cpu_after = psutil.cpu_percent(interval=1)
-    mem_after = process.memory_info().rss / (1024 ** 2)
-
-    # ========================
-    # 📊 Результаты
-    # ========================
-    st.subheader("Результаты инференса")
-    st.write(f"⏱️ Время выполнения: **{end - start:.3f} сек**")
-    st.write(f"🔢 Размер эмбеддингов: **{embeddings.shape}**")
-    st.write("📄 Первые 10 значений первого эмбеддинга:")
-    st.json(embeddings[0][:10].tolist())
-
-    st.subheader("📈 Ресурсы")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("CPU до (%)", f"{cpu_before:.1f}")
-    col2.metric("CPU после (%)", f"{cpu_after:.1f}")
-    col3.metric("Память (MB)", f"{mem_after:.1f}")
-
-    st.success("Тестирование завершено!")
+    # Графики
+    st.bar_chart({
+        "Время (сек)": [orig["time"], quant["time"]],
+        "RAM (MB)": [orig["ram_used"], quant["ram_used"]]
+    })
