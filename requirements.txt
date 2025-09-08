@@ -5,3 +5,4 @@ onnxruntime
 psutil
 numpy
 torch
+gdown
