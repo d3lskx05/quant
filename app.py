@@ -2,9 +2,7 @@ import time
 import psutil
 import numpy as np
 import streamlit as st
-from transformers import AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
-import torch
 import onnxruntime as ort
 from numpy.linalg import norm
 import os
@@ -12,6 +10,7 @@ import zipfile
 import gdown
 import huggingface_hub
 from pathlib import Path
+
 
 # ======================
 # Вспомогательные функции
@@ -58,23 +57,13 @@ def find_quantized_file(model_dir):
 
 
 @st.cache_resource
-def load_model(model_path, model_type="sentence-transformers", quantized=False):
-    """Загрузка модели (оригинал или квантованная)."""
-    if model_type == "sentence-transformers":
-        if quantized:
-            quant_file = find_quantized_file(model_path)
-            if quant_file:
-                return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": Path(quant_file).name})
-        return SentenceTransformer(model_path)
-    elif model_type == "transformers":
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModel.from_pretrained(model_path)
-        return model, tokenizer
-    elif model_type == "onnx":
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        providers = ["CPUExecutionProvider"]
-        return ort.InferenceSession(model_path, sess_options=so, providers=providers)
+def load_model(model_path, quantized=False):
+    """Загрузка модели (SentenceTransformers/ONNX)."""
+    if quantized:
+        quant_file = find_quantized_file(model_path)
+        if quant_file:
+            return SentenceTransformer(model_path, backend="onnx", model_kwargs={"file_name": Path(quant_file).name})
+    return SentenceTransformer(model_path)
 
 
 def measure_resources(func, *args, **kwargs):
@@ -129,8 +118,8 @@ if st.button("🔎 Запустить тест"):
     quant_dir = download_model(quant_source, quantized_id, "quantized_model")
 
     # Загружаем модели
-    original_model = load_model(orig_dir, model_type="sentence-transformers")
-    quantized_model = load_model(quant_dir, model_type="sentence-transformers", quantized=True)
+    original_model = load_model(orig_dir, quantized=False)
+    quantized_model = load_model(quant_dir, quantized=True)
 
     # Кодирование
     st.write("⚡ Измеряю производительность оригинальной модели...")
