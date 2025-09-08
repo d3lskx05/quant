@@ -2,6 +2,6 @@ streamlit
 gdown
 psutil
 transformers
-optimum[onnxruntime]
+onnxruntime
 torch
 numpy
