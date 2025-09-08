@@ -2,26 +2,40 @@ import time
 import psutil
 import streamlit as st
 import numpy as np
+import gdown
+import zipfile
+from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
 # =============================
-# 🚀 Настройки
+# 🔗 Ссылка на модель в GDrive
 # =============================
-MODEL_PATH = "onnx-user-bge-m3"  # папка с моделью
+MODEL_ID = "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36"  # <-- сюда вставь ID
+MODEL_ZIP_URL = f"https://drive.google.com/uc?id={MODEL_ID}"
+MODEL_DIR = Path("onnx-user-bge-m3")
 
 # =============================
-# 📥 Загрузка модели
+# 📥 Функция загрузки модели
 # =============================
 @st.cache_resource
-def load_model():
-    return SentenceTransformer(
-        MODEL_PATH,
+def download_and_load_model():
+    if not MODEL_DIR.exists():
+        st.write("📥 Скачиваю модель с Google Drive...")
+        gdown.download(MODEL_ZIP_URL, "model.zip", quiet=False)
+        with zipfile.ZipFile("model.zip", 'r') as zip_ref:
+            zip_ref.extractall(".")
+        st.write("✅ Модель распакована!")
+
+    st.write("🚀 Загружаю модель...")
+    model = SentenceTransformer(
+        str(MODEL_DIR),
         backend="onnx",
         model_kwargs={"file_name": "model_quantized.onnx"}
     )
+    return model
 
-model = load_model()
-st.success("Модель загружена!")
+model = download_and_load_model()
+st.success("Модель готова к использованию!")
 
 # =============================
 # 📝 Интерфейс
@@ -31,33 +45,22 @@ user_input = st.text_area("Введите текст для кодировани
 
 if st.button("Получить эмбеддинг"):
     if user_input.strip():
-        # =============================
-        # 📊 Замер ресурсов
-        # =============================
         process = psutil.Process()
-        start_mem = process.memory_info().rss / 1024 / 1024  # MB
+        start_mem = process.memory_info().rss / 1024 / 1024
         start_time = time.time()
 
-        # Инференс
         embedding = model.encode([user_input], normalize_embeddings=True)
-        
-        elapsed_time = time.time() - start_time
-        end_mem = process.memory_info().rss / 1024 / 1024  # MB
 
-        # =============================
-        # 📈 Вывод результатов
-        # =============================
+        elapsed_time = time.time() - start_time
+        end_mem = process.memory_info().rss / 1024 / 1024
+
         st.write(f"⏱ Время инференса: **{elapsed_time:.4f} сек**")
         st.write(f"💾 Использование памяти: **{end_mem - start_mem:.2f} MB**")
         st.write(f"📐 Размер эмбеддинга: {embedding.shape}")
-
         st.json({"Первые 10 значений эмбеддинга": embedding[0][:10].tolist()})
     else:
-        st.warning("Введите текст для кодирования!")
+        st.warning("Введите текст!")
 
-# =============================
-# 🖥️ Доп. метрики
-# =============================
 cpu_usage = psutil.cpu_percent(interval=0.5)
 mem_usage = psutil.virtual_memory().percent
 
