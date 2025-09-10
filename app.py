@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (с правильным masked mean pooling)
+# 🔥 QuantModel (исправленный)
 # ============================================================
 class QuantModel:
     """Универсальный загрузчик квантизированных ONNX моделей."""
@@ -64,7 +64,13 @@ class QuantModel:
         onnx_files = list(self.model_dir.rglob("*.onnx"))
         if not onnx_files:
             raise FileNotFoundError(f"❌ Нет .onnx модели в {self.model_dir}")
+
+        # Берём именно квантованную модель, если есть
         self.model_path = onnx_files[0]
+        for f in onnx_files:
+            if "quant" in f.name.lower():
+                self.model_path = f
+                break
 
     def _load_session(self):
         so = ort.SessionOptions()
@@ -95,13 +101,10 @@ class QuantModel:
         outputs = self.session.run(None, ort_inputs)
         embeddings = outputs[0]
 
-        # Masked mean pooling если (batch, seq, dim)
+        # Masked mean pooling (точно как в SentenceTransformers)
         if embeddings.ndim == 3:
             mask = ort_inputs["attention_mask"].astype(np.float32)  # (batch, seq)
-            mask_exp = np.expand_dims(mask, -1)                     # (batch, seq, 1)
-            summed = (embeddings * mask_exp).sum(axis=1)            # (batch, dim)
-            counts = mask_exp.sum(axis=1)                           # (batch, 1)
-            embeddings = summed / np.clip(counts, 1e-9, None)
+            embeddings = (embeddings * mask[..., None]).sum(1) / np.clip(mask.sum(1, keepdims=True), 1e-6, None)
 
         # Нормализация
         if normalize:
@@ -119,20 +122,8 @@ class QuantModel:
 # ============================================================
 # 🔧 Helpers
 # ============================================================
-def to_vector(embs):
-    arr = np.array(embs)
-    if arr.ndim == 1:
-        return arr
-    if arr.ndim == 2 and arr.shape[0] == 1:
-        return arr[0]
-    if arr.ndim == 3:
-        arr = arr.mean(axis=1)
-    return arr.mean(axis=0)
-
-def cosine_similarity(vec1, vec2):
-    return float(np.dot(vec1, vec2) / ((norm(vec1) * norm(vec2)) + 1e-12))
-
 def cosine_batch(A, B):
+    """Поэлементный косинус для пар предложений."""
     A = np.asarray(A)
     B = np.asarray(B)
     if A.shape != B.shape:
@@ -217,9 +208,6 @@ if run_button:
             }])
 
             st.subheader("📊 Результаты")
-            st.metric("Latency (s)", f"{latency:.4f}")
-            st.metric("Throughput (texts/s)", f"{len(texts_for_run)/max(latency,1e-12):.1f}")
-            st.metric("Memory (MB)", f"{memory:.1f}")
             st.dataframe(metrics_df)
 
         elif mode == "Квантованная модель":
@@ -247,9 +235,6 @@ if run_button:
             }])
 
             st.subheader("📊 Результаты")
-            st.metric("Latency (s)", f"{latency:.4f}")
-            st.metric("Throughput (texts/s)", f"{len(texts_for_run)/max(latency,1e-12):.1f}")
-            st.metric("Memory (MB)", f"{memory:.1f}")
             st.dataframe(metrics_df)
 
         else:  # Сравнение обеих
