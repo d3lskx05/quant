@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (исправленный pooling + нормализация)
+# 🔥 QuantModel (с правильным masked mean pooling)
 # ============================================================
 class QuantModel:
     """Универсальный загрузчик квантизированных ONNX моделей."""
@@ -57,7 +57,6 @@ class QuantModel:
                     resume_download=True
                 )
             elif self.source == "local":
-                # ничего не качаем — берем как есть
                 pass
             else:
                 raise ValueError(f"❌ Неизвестный источник: {self.source}")
@@ -88,23 +87,23 @@ class QuantModel:
 
     @lru_cache(maxsize=1024)
     def _encode_cached(self, text: str, normalize: bool = True):
-        # 🔹 Токенизация
+        # Токенизация
         inputs = self.tokenizer([text], padding=True, truncation=True, return_tensors="np")
         ort_inputs = {k: v for k, v in inputs.items()}
 
-        # 🔹 Прогон модели
+        # Прогон
         outputs = self.session.run(None, ort_inputs)
         embeddings = outputs[0]
 
-        # 🔹 Masked mean pooling, если выход (batch, seq, dim)
+        # Masked mean pooling если (batch, seq, dim)
         if embeddings.ndim == 3:
             mask = ort_inputs["attention_mask"].astype(np.float32)  # (batch, seq)
             mask_exp = np.expand_dims(mask, -1)                     # (batch, seq, 1)
             summed = (embeddings * mask_exp).sum(axis=1)            # (batch, dim)
             counts = mask_exp.sum(axis=1)                           # (batch, 1)
-            embeddings = summed / np.clip(counts, 1e-9, None)       # (batch, dim)
+            embeddings = summed / np.clip(counts, 1e-9, None)
 
-        # 🔹 Нормализация
+        # Нормализация
         if normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
             embeddings = embeddings / norms
@@ -120,8 +119,20 @@ class QuantModel:
 # ============================================================
 # 🔧 Helpers
 # ============================================================
+def to_vector(embs):
+    arr = np.array(embs)
+    if arr.ndim == 1:
+        return arr
+    if arr.ndim == 2 and arr.shape[0] == 1:
+        return arr[0]
+    if arr.ndim == 3:
+        arr = arr.mean(axis=1)
+    return arr.mean(axis=0)
+
+def cosine_similarity(vec1, vec2):
+    return float(np.dot(vec1, vec2) / ((norm(vec1) * norm(vec2)) + 1e-12))
+
 def cosine_batch(A, B):
-    """Поэлементный косинус для пар предложений."""
     A = np.asarray(A)
     B = np.asarray(B)
     if A.shape != B.shape:
@@ -165,7 +176,7 @@ elif mode == "Квантованная модель":
         tokenizer_name = st.text_input("Tokenizer name", "")
 
 else:  # Сравнение обеих
-    st.markdown("В этом режиме измеряем **качество (cosine similarity)** и скорость.")
+    st.markdown("В этом режиме измеряем **качество (cosine similarity)** и **скорость**.")
     col1, col2 = st.columns(2)
     with col1:
         model_id = st.text_input("HF repo ID (оригинал)", "deepvk/USER-BGE-M3", key="orig_repo_cmp")
@@ -242,7 +253,6 @@ if run_button:
             st.dataframe(metrics_df)
 
         else:  # Сравнение обеих
-            # Original
             with st.spinner("Загрузка оригинальной модели..."):
                 orig = SentenceTransformer(model_id)
             t0 = time.perf_counter()
@@ -250,7 +260,6 @@ if run_button:
             t1 = time.perf_counter()
             orig_latency = t1 - t0
 
-            # Quantized
             with st.spinner("Загрузка квантованной модели..."):
                 quant = QuantModel(
                     model_id=quant_id,
@@ -264,17 +273,20 @@ if run_button:
             t1 = time.perf_counter()
             quant_latency = t1 - t0
 
-            # Выравнивание форм
             O = np.asarray(orig_embs)
             Q = np.asarray(quant_embs)
+            if O.ndim == 3:
+                O = O.mean(axis=1)
+            if Q.ndim == 3:
+                Q = Q.mean(axis=1)
             if O.shape[1] != Q.shape[1]:
                 m = min(O.shape[1], Q.shape[1])
                 O = O[:, :m]
                 Q = Q[:, :m]
 
-            # Косинусы
             per_text_cos = cosine_batch(O, Q)
             avg_cos = float(per_text_cos.mean())
+            med_cos = float(np.median(per_text_cos))
 
             metrics_df = pd.DataFrame([
                 {
@@ -293,8 +305,10 @@ if run_button:
 
             st.subheader("📊 Метрики скорости")
             st.dataframe(metrics_df)
+
             st.subheader("🎯 Качество")
             st.write(f"Средняя cosine similarity (по {len(per_text_cos)} текстам): **{avg_cos:.4f}**")
+            st.write(f"Медиана cosine similarity: **{med_cos:.4f}**")
 
         if metrics_df is not None:
             csv = metrics_df.to_csv(index=False).encode("utf-8")
