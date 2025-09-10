@@ -173,10 +173,10 @@ else:  # Сравнение обеих
         model_id = st.text_input("HF repo ID (оригинал)", "deepvk/USER-BGE-M3", key="orig_repo_cmp")
     with col2:
         quant_source = st.selectbox("Источник кванта", ["gdrive", "hf", "local"], index=1, key="quant_src_cmp")
-        quant_id = st.text_input("ID/Repo/Path (квант)", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36", key="quant_id_cmp")
+        quant_id = st.text_input("ID/Repo/Path (квант)", "1ym0Lb_1C0p0QSIEMOmFIFaGGtCk7JNO5", key="quant_id_cmp")
     col3, col4 = st.columns(2)
     with col3:
-        quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3", key="quant_dir_cmp")
+        quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3-quantized-dyn", key="quant_dir_cmp")
     with col4:
         tokenizer_name = st.text_input("Tokenizer name", "", key="tok_cmp")
 
