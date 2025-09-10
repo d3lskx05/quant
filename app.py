@@ -20,7 +20,7 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (встроен сюда, с корректным пуллингом токенов)
+# 🔥 QuantModel (исправленный pooling + нормализация)
 # ============================================================
 class QuantModel:
     """Универсальный загрузчик квантизированных ONNX моделей."""
@@ -88,34 +88,27 @@ class QuantModel:
 
     @lru_cache(maxsize=1024)
     def _encode_cached(self, text: str, normalize: bool = True):
-        # Токенизация
+        # 🔹 Токенизация
         inputs = self.tokenizer([text], padding=True, truncation=True, return_tensors="np")
         ort_inputs = {k: v for k, v in inputs.items()}
-        # Прогон
+
+        # 🔹 Прогон модели
         outputs = self.session.run(None, ort_inputs)
         embeddings = outputs[0]
 
-        # Унификация формы:
-        # - если (batch, seq, dim) -> делаем masked mean по seq (attention_mask)
-        # - если (batch, dim) -> уже sentence embedding
+        # 🔹 Masked mean pooling, если выход (batch, seq, dim)
         if embeddings.ndim == 3:
-            # masked mean pooling
-            mask = ort_inputs.get("attention_mask", None)
-            if mask is not None:
-                mask = mask.astype(np.float32)[..., None]  # (batch, seq, 1)
-                summed = (embeddings * mask).sum(axis=1)   # (batch, dim)
-                counts = mask.sum(axis=1)                  # (batch, 1)
-                counts = np.clip(counts, 1e-6, None)
-                embeddings = summed / counts
-            else:
-                embeddings = embeddings.mean(axis=1)
+            mask = ort_inputs["attention_mask"].astype(np.float32)  # (batch, seq)
+            mask_exp = np.expand_dims(mask, -1)                     # (batch, seq, 1)
+            summed = (embeddings * mask_exp).sum(axis=1)            # (batch, dim)
+            counts = mask_exp.sum(axis=1)                           # (batch, 1)
+            embeddings = summed / np.clip(counts, 1e-9, None)       # (batch, dim)
 
-        # Нормализация на уровне предложений
+        # 🔹 Нормализация
         if normalize:
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-10
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
             embeddings = embeddings / norms
 
-        # Возвращаем (dim,) для одного текста
         return embeddings[0]
 
     def encode(self, texts, normalize=True):
@@ -127,36 +120,14 @@ class QuantModel:
 # ============================================================
 # 🔧 Helpers
 # ============================================================
-def to_vector(embs):
-    """Превращает батч эмбеддингов в один вектор (усреднение)."""
-    arr = np.array(embs)
-    # (dim,)
-    if arr.ndim == 1:
-        return arr
-    # (1, dim)
-    if arr.ndim == 2 and arr.shape[0] == 1:
-        return arr[0]
-    # (batch, seq, dim) -> среднее по seq, затем по batch
-    if arr.ndim == 3:
-        arr = arr.mean(axis=1)
-    # (batch, dim) -> среднее по batch
-    return arr.mean(axis=0)
-
-
-def cosine_similarity(vec1, vec2):
-    return float(np.dot(vec1, vec2) / ((norm(vec1) * norm(vec2)) + 1e-12))
-
-
 def cosine_batch(A, B):
     """Поэлементный косинус для пар предложений."""
     A = np.asarray(A)
     B = np.asarray(B)
     if A.shape != B.shape:
-        # подрезаем до min(dim)
         m = min(A.shape[-1], B.shape[-1])
         A = A[..., :m]
         B = B[..., :m]
-    # считаем, что уже нормализованы; но на всякий случай повторим
     A = A / (np.linalg.norm(A, axis=1, keepdims=True) + 1e-12)
     B = B / (np.linalg.norm(B, axis=1, keepdims=True) + 1e-12)
     return (A * B).sum(axis=1)
@@ -169,7 +140,6 @@ st.title("🔍 Тестирование моделей: Оригинал vs Кв
 
 mode = st.radio("Выберите режим:", ["Оригинальная модель", "Квантованная модель", "Сравнение обеих"])
 
-# Кнопка сброса сессии/кэшей
 if st.button("♻️ Сбросить сессию"):
     st.cache_data.clear()
     st.cache_resource.clear()
@@ -195,7 +165,7 @@ elif mode == "Квантованная модель":
         tokenizer_name = st.text_input("Tokenizer name", "")
 
 else:  # Сравнение обеих
-    st.markdown("В этом режиме измеряем **только качество** (cosine similarity) и скорость. Память не меряем.")
+    st.markdown("В этом режиме измеряем **качество (cosine similarity)** и скорость.")
     col1, col2 = st.columns(2)
     with col1:
         model_id = st.text_input("HF repo ID (оригинал)", "deepvk/USER-BGE-M3", key="orig_repo_cmp")
@@ -294,23 +264,18 @@ if run_button:
             t1 = time.perf_counter()
             quant_latency = t1 - t0
 
-            # Приведение форм (на всякий случай)
+            # Выравнивание форм
             O = np.asarray(orig_embs)
             Q = np.asarray(quant_embs)
-            if O.ndim == 3:
-                O = O.mean(axis=1)
-            if Q.ndim == 3:
-                Q = Q.mean(axis=1)
             if O.shape[1] != Q.shape[1]:
                 m = min(O.shape[1], Q.shape[1])
                 O = O[:, :m]
                 Q = Q[:, :m]
 
-            # Косинусы по каждому тексту + среднее
+            # Косинусы
             per_text_cos = cosine_batch(O, Q)
             avg_cos = float(per_text_cos.mean())
 
-            # Таблица метрик (без памяти)
             metrics_df = pd.DataFrame([
                 {
                     "Mode": "Original",
@@ -331,7 +296,6 @@ if run_button:
             st.subheader("🎯 Качество")
             st.write(f"Средняя cosine similarity (по {len(per_text_cos)} текстам): **{avg_cos:.4f}**")
 
-        # Кнопка выгрузки CSV (для любого режима)
         if metrics_df is not None:
             csv = metrics_df.to_csv(index=False).encode("utf-8")
             st.download_button(
