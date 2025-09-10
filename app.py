@@ -77,7 +77,7 @@ class QuantModel:
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = ["CPUExecutionProvider"]
         try:
-            if ort.get_device() == "GPU":
+            if ort.get_device() == "CPU":
                 providers.insert(0, "CUDAExecutionProvider")
         except Exception:
             pass
