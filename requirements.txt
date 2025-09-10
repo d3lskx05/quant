@@ -6,4 +6,4 @@ onnxruntime
 gdown
 pandas
 numpy
-accelerate
+
