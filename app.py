@@ -20,10 +20,10 @@ from transformers import AutoTokenizer
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel (исправленный)
+# 🔥 QuantModel
+# Универсальный загрузчик квантизированных ONNX моделей.
 # ============================================================
 class QuantModel:
-    """Универсальный загрузчик квантизированных ONNX моделей."""
     def __init__(self, model_id: str, source: str = "gdrive",
                  model_dir: str = "onnx_model", tokenizer_name: Optional[str] = None,
                  force_download: bool = False):
@@ -40,8 +40,7 @@ class QuantModel:
 
     def _ensure_model(self):
         os.makedirs(self.model_dir, exist_ok=True)
-        need_download = self.force_download or not any(self.model_dir.glob("*.onnx"))
-
+        need_download = self.force_download or not any(self.model_dir.rglob("*.onnx"))
         if need_download:
             if self.source == "gdrive":
                 zip_path = f"{self.model_dir}.zip"
@@ -60,12 +59,9 @@ class QuantModel:
                 pass
             else:
                 raise ValueError(f"❌ Неизвестный источник: {self.source}")
-
         onnx_files = list(self.model_dir.rglob("*.onnx"))
         if not onnx_files:
             raise FileNotFoundError(f"❌ Нет .onnx модели в {self.model_dir}")
-
-        # Берём именно квантованную модель, если есть
         self.model_path = onnx_files[0]
         for f in onnx_files:
             if "quant" in f.name.lower():
@@ -93,24 +89,17 @@ class QuantModel:
 
     @lru_cache(maxsize=1024)
     def _encode_cached(self, text: str, normalize: bool = True):
-        # Токенизация
         inputs = self.tokenizer([text], padding=True, truncation=True, return_tensors="np")
         ort_inputs = {k: v for k, v in inputs.items()}
-
-        # Прогон
         outputs = self.session.run(None, ort_inputs)
         embeddings = outputs[0]
-
-        # Masked mean pooling (точно как в SentenceTransformers)
         if embeddings.ndim == 3:
             mask = ort_inputs["attention_mask"].astype(np.float32)  # (batch, seq)
-            embeddings = (embeddings * mask[..., None]).sum(1) / np.clip(mask.sum(1, keepdims=True), 1e-6, None)
-
-        # Нормализация
+            embeddings = (embeddings * mask[..., None]).sum(1) \
+                         / np.clip(mask.sum(1, keepdims=True), 1e-6, None)
         if normalize:
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
             embeddings = embeddings / norms
-
         return embeddings[0]
 
     def encode(self, texts, normalize=True):
@@ -118,12 +107,10 @@ class QuantModel:
             texts = [texts]
         return np.array([self._encode_cached(t, normalize) for t in texts])
 
-
 # ============================================================
-# 🔧 Helpers
+# 🔧 Вспомогательные функции
 # ============================================================
 def cosine_batch(A, B):
-    """Поэлементный косинус для пар предложений."""
     A = np.asarray(A)
     B = np.asarray(B)
     if A.shape != B.shape:
@@ -134,12 +121,10 @@ def cosine_batch(A, B):
     B = B / (np.linalg.norm(B, axis=1, keepdims=True) + 1e-12)
     return (A * B).sum(axis=1)
 
-
 # ============================================================
 # 🎛️ UI
 # ============================================================
 st.title("🔍 Тестирование моделей: Оригинал vs Квант")
-
 mode = st.radio("Выберите режим:", ["Оригинальная модель", "Квантованная модель", "Сравнение обеих"])
 
 if st.button("♻️ Сбросить сессию"):
@@ -147,7 +132,8 @@ if st.button("♻️ Сбросить сессию"):
     st.cache_resource.clear()
     st.rerun()
 
-input_text = st.text_area("Тексты для теста (по одной строке)", "Это тестовое предложение.\nПример второй строки.")
+input_text = st.text_area("Тексты для теста (по одной строке)", 
+                          "Это тестовое предложение.\nПример второй строки.")
 texts = [t.strip() for t in input_text.split("\n") if t.strip()]
 batch_size = st.slider("Количество повторов для throughput-теста", 1, 128, 8)
 force_download = st.checkbox("♻️ Перекачать квант-модель заново", False)
@@ -172,11 +158,14 @@ else:  # Сравнение обеих
     with col1:
         model_id = st.text_input("HF repo ID (оригинал)", "deepvk/USER-BGE-M3", key="orig_repo_cmp")
     with col2:
-        quant_source = st.selectbox("Источник кванта", ["gdrive", "hf", "local"], index=1, key="quant_src_cmp")
-        quant_id = st.text_input("ID/Repo/Path (квант)", "1ym0Lb_1C0p0QSIEMOmFIFaGGtCk7JNO5", key="quant_id_cmp")
+        quant_source = st.selectbox("Источник кванта", ["gdrive", "hf", "local"], 
+                                    index=1, key="quant_src_cmp")
+        quant_id = st.text_input("ID/Repo/Path (квант)", 
+                                 "1ym0Lb_1C0p0QSIEMOmFIFaGGtCk7JNO5", key="quant_id_cmp")
     col3, col4 = st.columns(2)
     with col3:
-        quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3-quantized-dyn", key="quant_dir_cmp")
+        quant_dir = st.text_input("Папка для кванта", 
+                                  "onnx-user-bge-m3-quantized-dyn", key="quant_dir_cmp")
     with col4:
         tokenizer_name = st.text_input("Tokenizer name", "", key="tok_cmp")
 
@@ -187,7 +176,8 @@ run_button = st.button("🚀 Запустить тест")
 # ============================================================
 if run_button:
     try:
-        texts_for_run = (texts * batch_size)[:max(len(texts), 1)]
+        # Повторяем тексты согласно batch_size (без обрезки)
+        texts_for_run = texts * batch_size
 
         if mode == "Оригинальная модель":
             proc = psutil.Process()
@@ -197,7 +187,7 @@ if run_button:
             embs = model.encode(texts_for_run, normalize_embeddings=True)
             t1 = time.perf_counter()
             latency = t1 - t0
-            memory = proc.memory_info().rss / 1024 ** 2
+            memory = proc.memory_info().rss / 1024 ** 2  # в мегабайтах
 
             metrics_df = pd.DataFrame([{
                 "Mode": "Original",
