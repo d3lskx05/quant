@@ -3,7 +3,6 @@ import zipfile
 import time
 import traceback
 from pathlib import Path
-from functools import lru_cache
 from typing import Optional
 
 import gdown
@@ -13,15 +12,13 @@ import psutil
 import pandas as pd
 import streamlit as st
 import onnxruntime as ort
-from numpy.linalg import norm
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer
 
 st.set_page_config(page_title="Quantized model tester", layout="wide")
 
 # ============================================================
-# 🔥 QuantModel
-# Универсальный загрузчик квантизированных ONNX моделей.
+# 🔥 QuantModel (исправленный)
 # ============================================================
 class QuantModel:
     def __init__(self, model_id: str, source: str = "gdrive",
@@ -87,30 +84,42 @@ class QuantModel:
         except Exception:
             return AutoTokenizer.from_pretrained("deepvk/USER-BGE-M3", use_fast=True)
 
-    @lru_cache(maxsize=1024)
-    def _encode_cached(self, text: str, normalize: bool = True):
-        inputs = self.tokenizer([text], padding=True, truncation=True, return_tensors="np")
-        ort_inputs = {k: v for k, v in inputs.items()}
-        outputs = self.session.run(None, ort_inputs)
-        embeddings = outputs[0]
-        if embeddings.ndim == 3:
-            mask = ort_inputs["attention_mask"].astype(np.float32)  # (batch, seq)
-            embeddings = (embeddings * mask[..., None]).sum(1) \
-                         / np.clip(mask.sum(1, keepdims=True), 1e-6, None)
-        if normalize:
-            norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
-            embeddings = embeddings / norms
-        return embeddings[0]
+    def _mean_pooling(self, model_output, attention_mask):
+        """Точный mean pooling как в SentenceTransformers"""
+        token_embeddings = model_output  # (batch, seq, hidden)
+        input_mask_expanded = np.expand_dims(attention_mask, -1).astype(np.float32)
+        sum_embeddings = np.sum(token_embeddings * input_mask_expanded, axis=1)
+        sum_mask = np.clip(input_mask_expanded.sum(1), a_min=1e-9, a_max=None)
+        return sum_embeddings / sum_mask
 
-    def encode(self, texts, normalize=True):
+    def encode(self, texts, normalize=True, batch_size: int = 32):
         if isinstance(texts, str):
             texts = [texts]
-        return np.array([self._encode_cached(t, normalize) for t in texts])
+
+        all_embeddings = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            inputs = self.tokenizer(batch, padding=True, truncation=True, return_tensors="np")
+            ort_inputs = {k: v for k, v in inputs.items()}
+
+            outputs = self.session.run(None, ort_inputs)
+            embeddings = outputs[0]
+
+            embeddings = self._mean_pooling(embeddings, ort_inputs["attention_mask"])
+
+            if normalize:
+                norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-12
+                embeddings = embeddings / norms
+
+            all_embeddings.append(embeddings)
+
+        return np.vstack(all_embeddings)
 
 # ============================================================
-# 🔧 Вспомогательные функции
+# 🔧 Helpers
 # ============================================================
 def cosine_batch(A, B):
+    """Поэлементный косинус для пар предложений."""
     A = np.asarray(A)
     B = np.asarray(B)
     if A.shape != B.shape:
@@ -132,7 +141,7 @@ if st.button("♻️ Сбросить сессию"):
     st.cache_resource.clear()
     st.rerun()
 
-input_text = st.text_area("Тексты для теста (по одной строке)", 
+input_text = st.text_area("Тексты для теста (по одной строке)",
                           "Это тестовое предложение.\nПример второй строки.")
 texts = [t.strip() for t in input_text.split("\n") if t.strip()]
 batch_size = st.slider("Количество повторов для throughput-теста", 1, 128, 8)
@@ -158,13 +167,13 @@ else:  # Сравнение обеих
     with col1:
         model_id = st.text_input("HF repo ID (оригинал)", "deepvk/USER-BGE-M3", key="orig_repo_cmp")
     with col2:
-        quant_source = st.selectbox("Источник кванта", ["gdrive", "hf", "local"], 
+        quant_source = st.selectbox("Источник кванта", ["gdrive", "hf", "local"],
                                     index=1, key="quant_src_cmp")
-        quant_id = st.text_input("ID/Repo/Path (квант)", 
+        quant_id = st.text_input("ID/Repo/Path (квант)",
                                  "1ym0Lb_1C0p0QSIEMOmFIFaGGtCk7JNO5", key="quant_id_cmp")
     col3, col4 = st.columns(2)
     with col3:
-        quant_dir = st.text_input("Папка для кванта", 
+        quant_dir = st.text_input("Папка для кванта",
                                   "onnx-user-bge-m3-quantized-dyn", key="quant_dir_cmp")
     with col4:
         tokenizer_name = st.text_input("Tokenizer name", "", key="tok_cmp")
@@ -176,7 +185,7 @@ run_button = st.button("🚀 Запустить тест")
 # ============================================================
 if run_button:
     try:
-        # Повторяем тексты согласно batch_size (без обрезки)
+        # Повторяем тексты согласно batch_size
         texts_for_run = texts * batch_size
 
         if mode == "Оригинальная модель":
@@ -187,7 +196,7 @@ if run_button:
             embs = model.encode(texts_for_run, normalize_embeddings=True)
             t1 = time.perf_counter()
             latency = t1 - t0
-            memory = proc.memory_info().rss / 1024 ** 2  # в мегабайтах
+            memory = proc.memory_info().rss / 1024 ** 2
 
             metrics_df = pd.DataFrame([{
                 "Mode": "Original",
