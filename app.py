@@ -215,6 +215,12 @@ if run_button:
                     tokenizer_name=tokenizer_name if tokenizer_name else None,
                     force_download=force_download
                 )
+
+            # вывод содержимого папки
+            st.subheader("📂 Содержимое quant_dir")
+            files = list(Path(quant_dir).glob("*"))
+            st.write([f.name for f in files])
+
             st.write(f"🔑 Используемый токенизатор: `{model.tokenizer.name_or_path}`")
 
             t0 = time.perf_counter()
@@ -250,6 +256,12 @@ if run_button:
                     tokenizer_name=tokenizer_name if tokenizer_name else None,
                     force_download=force_download
                 )
+
+            # вывод содержимого папки
+            st.subheader("📂 Содержимое quant_dir")
+            files = list(Path(quant_dir).glob("*"))
+            st.write([f.name for f in files])
+
             st.write(f"🔑 Используемый токенизатор: `{quant.tokenizer.name_or_path}`")
 
             t0 = time.perf_counter()
