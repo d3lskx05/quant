@@ -25,12 +25,10 @@ st.set_page_config(page_title="Quantized model tester", layout="wide")
 class QuantModel:
     def __init__(self, model_id: str, source: str = "gdrive",
                  model_dir: str = "onnx_model",
-                 tokenizer_name: Optional[str] = None,
                  force_download: bool = False):
         self.model_id = model_id
         self.source = source
         self.model_dir = Path(model_dir)
-        self.tokenizer_name = tokenizer_name
         self.force_download = force_download
         self.model_path = None
 
@@ -59,6 +57,12 @@ class QuantModel:
                 pass
             else:
                 raise ValueError(f"❌ Неизвестный источник: {self.source}")
+
+        # вывод содержимого папки
+        files = [str(p.name) for p in self.model_dir.iterdir()]
+        st.write(f"📂 Файлы в {self.model_dir}:")
+        st.json(files)
+
         onnx_files = list(self.model_dir.rglob("*.onnx"))
         if not onnx_files:
             raise FileNotFoundError(f"❌ Нет .onnx модели в {self.model_dir}")
@@ -81,7 +85,6 @@ class QuantModel:
 
     def _load_tokenizer(self):
         try:
-            # всегда грузим токенизатор из локальной папки
             tok = PreTrainedTokenizerFast.from_pretrained(str(self.model_dir))
             st.write(f"🔑 Используемый токенизатор: {self.model_dir}")
             return tok
