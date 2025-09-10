@@ -13,8 +13,8 @@ def load_models(orig_id, quant_id):
 
 st.title("Сравнение оригинальной и квантованной модели")
 
-orig_id = "user/model-orig"
-quant_id = "user/model-8bit"
+orig_id = "deepvk/USER-bge-m3"
+quant_id = "skatzR/model"
 tokenizer, model_orig, model_q = load_models(orig_id, quant_id)
 
 text = st.text_area("Введите текст для анализа", "Hello, world!")
