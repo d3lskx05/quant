@@ -161,7 +161,7 @@ elif mode == "Квантованная модель":
     col1, col2 = st.columns(2)
     with col1:
         quant_source = st.selectbox("Источник", ["gdrive", "hf", "local"], index=1)
-        quant_id = st.text_input("ID/Repo/Path", "1lkrvCPIE1wvffIuCSHGtbEz3Epjx5R36")
+        quant_id = st.text_input("ID/Repo/Path", "1ym0Lb_1C0p0QSIEMOmFIFaGGtCk7JNO5")
     with col2:
         quant_dir = st.text_input("Папка для кванта", "onnx-user-bge-m3")
         tokenizer_name = st.text_input("Tokenizer name", "")
