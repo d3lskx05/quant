@@ -45,7 +45,7 @@ st.write("**Инструкции:** загрузите ZIP (содержит mod
          "введите его Google Drive ID сверху и нажмите `Запустить сравнение`.")
 
 # ============================
-# Helpers: filesystem / unzip / fix names
+# Helpers
 # ============================
 def download_and_extract_gdrive(gdrive_id: str, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -116,8 +116,6 @@ class OnnxEncoder:
         providers = ["CPUExecutionProvider"]
         self.sess = ort.InferenceSession(self.onnx_path, sess_options=so, providers=providers)
         self.tokenizer = tokenizer
-        # список допустимых входов для этой модели
-        self.valid_inputs = {i.name for i in self.sess.get_inputs()}
 
     @staticmethod
     def _mean_pooling(embs: np.ndarray, attention_mask: np.ndarray):
@@ -134,18 +132,23 @@ class OnnxEncoder:
 
     def encode_batch(self, texts: List[str], normalize: bool = True) -> np.ndarray:
         inputs = self.tokenizer(texts, padding=True, truncation=True, return_tensors="np")
-        # фильтруем только допустимые ключи
-        ort_inputs = {k: v for k, v in inputs.items() if k in self.valid_inputs}
+        # ✅ фильтруем только те входы, которые реально принимает ONNX
+        input_names = {inp.name for inp in self.sess.get_inputs()}
+        ort_inputs = {k: v for k, v in inputs.items() if k in input_names}
+
         outputs = self.sess.run(None, ort_inputs)
         emb = outputs[0]
-        pooled = self._mean_pooling(emb, ort_inputs.get("attention_mask", np.ones((len(texts), 1))))
+        pooled = self._mean_pooling(
+            emb, ort_inputs.get("attention_mask", np.ones((len(texts), 1)))
+        )
+
         if normalize:
             norms = np.linalg.norm(pooled, axis=1, keepdims=True) + 1e-12
             pooled = pooled / norms
         return pooled
 
 # ============================
-# Utilities for measurements
+# Utilities
 # ============================
 def cosine_batch(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     A = np.asarray(A)
@@ -183,13 +186,13 @@ if run_button:
         st.subheader("📂 Содержимое папки квант-модели")
         files = list_files_recursive(model_dir)
         if not files:
-            st.error(f"Папка {model_dir} пуста или не существует.")
+            st.error(f"Папка {model_dir} пуста или не существует. Проверьте путь/архив.")
             st.stop()
         st.write(files)
 
         onnx_file = find_onnx_file(model_dir)
         if onnx_file is None:
-            st.error("ONNX файл не найден.")
+            st.error("ONNX файл не найден в указанной папке.")
             st.stop()
         st.success(f"Найден ONNX: {onnx_file.name}")
 
@@ -207,7 +210,7 @@ if run_button:
                 st.success("AutoTokenizer смог загрузить токенизатор локально.")
             except Exception as e2:
                 st.warning(f"AutoTokenizer локально не сработал: {e2}")
-                st.info("Берём токенизатор из HF.")
+                st.info("Будем пытаться взять токенизатор из HF hub (deepvk/USER-bge-m3).")
                 tokenizer = AutoTokenizer.from_pretrained(orig_model_id, use_fast=True)
                 used_local_tokenizer = False
                 st.success(f"Токенизатор загружен из HF: {orig_model_id}")
@@ -225,33 +228,38 @@ if run_button:
         st.success("Оригинальная модель загружена.")
 
         st.subheader("🧪 Ввод тестовых фраз")
-        input_texts = st.text_area("Введите тестовые тексты", value="Тестовая строка.\nКак дела?")
+        input_texts = st.text_area(
+            "Введите тестовые тексты (по одной строке). Оставьте пустым, чтобы генерировать автоматически.",
+            value="Тестовая строка для замера скорости.\nПример использования модели.\nКак дела?"
+        )
         user_texts = [t.strip() for t in input_texts.splitlines() if t.strip()]
         if not user_texts:
-            user_texts = [f"Тестовая строка {i}" for i in range(50)]
+            user_texts = [f"Тестовая строка номер {i}" for i in range(50)]
         if len(user_texts) < calib_texts_count:
             times = (calib_texts_count + len(user_texts) - 1) // len(user_texts)
             eval_texts = (user_texts * times)[:calib_texts_count]
         else:
             eval_texts = user_texts[:calib_texts_count]
 
-        st.write(f"Используем {len(eval_texts)} текстов для оценки cosine similarity.")
+        st.write(f"Используем {len(eval_texts)} текстов для оценки cosine similarity и {len(user_texts)} уникальных введённых фраз.")
 
         st.info(f"Прогрев моделей ({warmup_runs} прогонов)...")
         for _ in range(int(warmup_runs)):
             _ = orig.encode(user_texts[:min(8, len(user_texts))], normalize_embeddings=True)
             _ = onnx_encoder.encode_batch(user_texts[:min(8, len(user_texts))], normalize=True)
 
-        st.info("Измеряем скорость инференса...")
+        st.info("Измеряем скорость инференса (полный прогон)...")
         bench_texts = user_texts * 10
         t0 = time.perf_counter()
         _ = orig.encode(bench_texts, normalize_embeddings=True, batch_size=int(bench_batch_size))
-        orig_time = time.perf_counter() - t0
+        t1 = time.perf_counter()
+        orig_time = t1 - t0
         t0 = time.perf_counter()
         _ = onnx_encoder.encode_batch(bench_texts, normalize=True)
-        onnx_time = time.perf_counter() - t0
+        t1 = time.perf_counter()
+        onnx_time = t1 - t0
 
-        st.info("Генерируем эмбеддинги...")
+        st.info("Генерируем эмбеддинги для оценки качества...")
         emb_orig = orig.encode(eval_texts, normalize_embeddings=True, batch_size=int(bench_batch_size))
         emb_onx = onnx_encoder.encode_batch(eval_texts, normalize=True)
 
@@ -284,6 +292,7 @@ if run_button:
         st.write("🧾 Доп. информация")
         st.write(f"Используем локальный токенизатор? {used_local_tokenizer}")
         st.write(f"ONNX файл: {onnx_file}")
+        st.write("Список файлов в quant_dir:")
         st.json(files)
 
         st.success("Готово ✅")
